@@ -1,0 +1,329 @@
+// Digital Twin — Production Prisma Schema
+// Ownership, versioning, consent, and audit are first-class citizens.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector"), uuidOssp(map: "uuid-ossp")]
+}
+
+// ───────────────────────────────────────────────────────────────
+// Identity & Ownership Root
+// ───────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  clerkId       String    @unique // Clerk user ID — source of truth for auth
+  email         String    @unique
+  displayName   String?
+  avatarUrl     String?
+  bio           String?   @db.Text
+  timezone      String    @default("UTC")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime? // Soft delete for account
+
+  // Ownership relations
+  memories          Memory[]
+  memoryVersions    MemoryVersion[]
+  consentGrants     ConsentGrant[]
+  permissionAudits  PermissionAudit[]
+  twinSessions      TwinSession[]
+  chatThreads       ChatThread[]
+  chatMessages      ChatMessage[]
+  personalityProfile PersonalityProfile?
+
+  @@index([clerkId])
+  @@index([email])
+  @@map("users")
+}
+
+// ───────────────────────────────────────────────────────────────
+// Memory System — Editable, Versioned, Owned
+// ───────────────────────────────────────────────────────────────
+
+enum MemoryType {
+  FACT
+  PREFERENCE
+  EXPERIENCE
+  STYLE
+  RELATIONSHIP
+  SKILL
+  GOAL
+  CONTEXT
+}
+
+enum MemorySource {
+  USER
+  IMPORTED
+  AI_SUGGESTED
+  SYSTEM
+}
+
+enum MemoryStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+model Memory {
+  id              String       @id @default(uuid()) @db.Uuid
+  userId          String       @db.Uuid
+  content         String       @db.Text
+  type            MemoryType   @default(FACT)
+  source          MemorySource @default(USER)
+  status          MemoryStatus @default(ACTIVE)
+  
+  // Versioning
+  version         Int          @default(1)
+  currentVersionId String?     @db.Uuid // Points to latest MemoryVersion
+  
+  // Semantic search
+  embedding       Unsupported("vector(1536)")? // OpenAI text-embedding-3-small
+  
+  // Encryption (high-sensitivity)
+  isEncrypted     Boolean      @default(false)
+
+  // Rich metadata
+  tags            String[]     @default([])
+  confidence      Float        @default(1.0) // 0–1, user or AI confidence
+  importance      Int          @default(5)   // 1–10 ranking
+  timeRangeStart  DateTime?
+  timeRangeEnd    DateTime?
+  relatedPeople   String[]     @default([])
+  metadata        Json         @default("{}")
+  
+  // Provenance
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+  createdBy       String?      // "user" | "ai" | system actor
+  
+  // Relations
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  versions        MemoryVersion[]
+  citations       MessageCitation[]
+
+  @@index([userId, status])
+  @@index([userId, type])
+  @@index([userId, tags])
+  @@index([userId, importance])
+  @@map("memories")
+}
+
+model MemoryVersion {
+  id          String   @id @default(uuid()) @db.Uuid
+  memoryId    String   @db.Uuid
+  userId      String   @db.Uuid
+  version     Int
+  content     String   @db.Text
+  changeNote  String?
+  createdAt   DateTime @default(now())
+  createdBy   String?  // who made this version
+
+  memory      Memory   @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([memoryId, version])
+  @@index([memoryId])
+  @@map("memory_versions")
+}
+
+// ───────────────────────────────────────────────────────────────
+// Consent & Permission Engine — Core Trust Primitive
+// ───────────────────────────────────────────────────────────────
+
+enum GranteeType {
+  APP
+  PERSON
+  AGENT
+  PUBLIC
+  API_KEY
+}
+
+enum ConsentScope {
+  READ_MEMORIES
+  READ_PROFILE
+  CHAT
+  ACT_ON_BEHALF
+  EXPORT
+  SUGGEST_MEMORIES
+  MANAGE_GRANTS // elevated
+}
+
+model ConsentGrant {
+  id            String         @id @default(uuid()) @db.Uuid
+  userId        String         @db.Uuid
+  
+  // Who / what is receiving access
+  granteeType   GranteeType
+  granteeId     String?        // external id, email, app slug, or null for PUBLIC
+  granteeLabel  String?        // human readable "My Portfolio Site", "Spouse", etc.
+  
+  // What they can do
+  scopes        ConsentScope[]
+  purpose       String         @db.Text // required free-text purpose
+  
+  // Lifecycle
+  expiresAt     DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+  
+  // Security
+  tokenHash     String?        @unique // hashed API token if issued
+  maxUses       Int?           // optional usage cap
+  useCount      Int            @default(0)
+  
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  lastUsedAt    DateTime?
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  audits        PermissionAudit[]
+  sessions      TwinSession[]
+
+  @@index([userId, revokedAt])
+  @@index([tokenHash])
+  @@index([granteeType, granteeId])
+  @@map("consent_grants")
+}
+
+model PermissionAudit {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  grantId     String?  @db.Uuid
+  
+  action      String   // CREATE_GRANT | REVOKE | USE | DENY | etc.
+  actor       String   // who performed the action (user, system, grantee)
+  actorType   String   // USER | SYSTEM | GRANTEE | AI
+  resource    String?  // memory id, session id, etc.
+  metadata    Json     @default("{}")
+  ipAddress   String?
+  userAgent   String?
+  
+  timestamp   DateTime @default(now())
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grant       ConsentGrant? @relation(fields: [grantId], references: [id], onDelete: SetNull)
+
+  @@index([userId, timestamp])
+  @@index([grantId])
+  @@map("permission_audits")
+}
+
+// ───────────────────────────────────────────────────────────────
+// Twin Runtime — Sessions & Chat with Provenance
+// ───────────────────────────────────────────────────────────────
+
+model TwinSession {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @db.Uuid
+  grantId         String?  @db.Uuid // null = owner’s own session
+  
+  // Context window snapshot (for reproducibility)
+  activeMemoryIds String[] @default([]) // UUIDs of memories in context
+  systemPrompt    String?  @db.Text
+  metadata        Json     @default("{}")
+  
+  startedAt       DateTime @default(now())
+  endedAt         DateTime?
+  lastActiveAt    DateTime @default(now())
+
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grant           ConsentGrant? @relation(fields: [grantId], references: [id], onDelete: SetNull)
+  threads         ChatThread[]
+
+  @@index([userId])
+  @@index([grantId])
+  @@map("twin_sessions")
+}
+
+model ChatThread {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  sessionId   String?  @db.Uuid
+  title       String?
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session     TwinSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  messages    ChatMessage[]
+
+  @@index([userId, isArchived])
+  @@map("chat_threads")
+}
+
+model ChatMessage {
+  id          String   @id @default(uuid()) @db.Uuid
+  threadId    String   @db.Uuid
+  userId      String   @db.Uuid
+  
+  role        String   // user | assistant | system
+  content     String   @db.Text
+  
+  // Transparency / Provenance
+  model       String?  // which model generated this
+  confidence  Float?
+  isGenerated Boolean  @default(false)
+  
+  createdAt   DateTime @default(now())
+
+  thread      ChatThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  citations   MessageCitation[]
+
+  @@index([threadId])
+  @@index([userId])
+  @@map("chat_messages")
+}
+
+model MessageCitation {
+  id          String   @id @default(uuid()) @db.Uuid
+  messageId   String   @db.Uuid
+  memoryId    String   @db.Uuid
+  
+  // How this memory influenced the response
+  relevance   Float?   // similarity score
+  excerpt     String?  @db.Text // the part that was used
+  reason      String?  // short explanation of why it was selected
+
+  message     ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  memory      Memory      @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([memoryId])
+  @@map("message_citations")
+}
+
+// ───────────────────────────────────────────────────────────────
+// Personality & Style Layer
+// ───────────────────────────────────────────────────────────────
+
+model PersonalityProfile {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @db.Uuid
+  
+  // High-level traits (user editable)
+  traits          Json     @default("{}") // { openness: 0.8, formality: 0.3, ... }
+  speakingStyle   String?  @db.Text
+  values          String[] @default([])
+  avoidTopics     String[] @default([])
+  preferredTone   String?
+  
+  // Derived / AI-suggested (always marked)
+  suggestedTraits Json     @default("{}")
+  
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("personality_profiles")
+}
