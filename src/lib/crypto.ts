@@ -57,3 +57,11 @@ export async function decryptContent(ciphertext: string, passphrase: string): Pr
 export function isEncrypted(content: string): boolean {
   return content.startsWith("__enc__");
 }
+
+/** Aliases used by memories.ts and vault-import.ts */
+export const encryptText = encryptContent;
+export const decryptText = decryptContent;
+export function isEncryptedPayload(content: string): boolean {
+  return isEncrypted(content);
+}
+export type EncryptedPayload = string;
