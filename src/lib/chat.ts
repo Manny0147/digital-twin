@@ -1,10 +1,16 @@
 import { prisma } from "./db";
 import { z } from "zod";
+import type { ChatThread, ChatMessage, MessageCitation } from "@prisma/client";
 
 export const CreateThreadSchema = z.object({
   title: z.string().max(200).optional(),
   sessionId: z.string().uuid().optional().nullable(),
 });
+
+export type ThreadWithPreview = ChatThread & {
+  messages: (ChatMessage & { citations?: MessageCitation[] })[];
+  _count?: { messages: number };
+};
 
 export async function createThread(userId: string, input: z.infer<typeof CreateThreadSchema> = {}) {
   return prisma.chatThread.create({
