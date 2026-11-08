@@ -31,9 +31,7 @@ export const CreateMemorySchema = z.object({
   timeRangeEnd: z.coerce.date().optional().nullable(),
   relatedPeople: z.array(z.string().max(100)).max(20).default([]),
   metadata: z.record(z.unknown()).default({}),
-  /** Mark memory as high-sensitivity — requires passphrase */
   sensitive: z.boolean().default(false),
-  /** Passphrase used only for this write; never stored */
   passphrase: z.string().min(8).max(200).optional(),
 });
 
@@ -206,11 +204,57 @@ export async function decryptMemoryContent(
   return decryptText(payload, passphrase);
 }
 
-export async function listMemories(userId: string) {
+export async function listMemories(
+  userId: string,
+  _opts?: { search?: string; type?: MemoryType; limit?: number; offset?: number }
+) {
   return prisma.memory.findMany({
     where: { userId, status: { not: MemoryStatus.DELETED } },
     orderBy: [{ importance: "desc" }, { updatedAt: "desc" }],
   });
+}
+
+export async function getMemory(userId: string, memoryId: string) {
+  return prisma.memory.findFirst({
+    where: { id: memoryId, userId, status: { not: MemoryStatus.DELETED } },
+  });
+}
+
+export async function getMemoryHistory(userId: string, memoryId: string) {
+  return prisma.memoryVersion.findMany({
+    where: { memoryId, userId },
+    orderBy: { version: "desc" },
+  });
+}
+
+export async function deleteMemory(userId: string, memoryId: string) {
+  const memory = await prisma.memory.update({
+    where: { id: memoryId, userId },
+    data: { status: MemoryStatus.DELETED, deletedAt: new Date() },
+  });
+  await logPermissionEvent({
+    userId,
+    action: "DELETE_MEMORY",
+    actor: userId,
+    actorType: "USER",
+    resource: memoryId,
+  });
+  return memory;
+}
+
+export async function acceptSuggestedMemory(userId: string, memoryId: string) {
+  const memory = await prisma.memory.update({
+    where: { id: memoryId, userId },
+    data: { status: MemoryStatus.ACTIVE },
+  });
+  await logPermissionEvent({
+    userId,
+    action: "ACCEPT_SUGGESTED_MEMORY",
+    actor: userId,
+    actorType: "USER",
+    resource: memoryId,
+  });
+  return memory;
 }
 
 export async function archiveMemory(userId: string, memoryId: string) {
