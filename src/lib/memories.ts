@@ -1,22 +1,15 @@
 import { prisma } from "./db";
 import {
-  Memory,
   MemorySource,
   MemoryStatus,
   MemoryType,
-  MemoryVersion,
 } from "@prisma/client";
 import { z } from "zod";
 import { logPermissionEvent } from "./permissions";
 import { generateEmbedding, toPgVector } from "./ai/embeddings";
 import { sanitizeMemoryContent } from "./sanitize";
 import { limiters } from "./rate-limit";
-import {
-  encryptText,
-  decryptText,
-  isEncryptedPayload,
-  type EncryptedPayload,
-} from "./crypto";
+import { encryptText, decryptText } from "./crypto";
 
 const ENC_PREFIX = "__enc__:";
 
@@ -56,6 +49,15 @@ async function embedIfPossible(content: string): Promise<string | null> {
   }
 }
 
+async function writeEmbedding(memoryId: string, embedding: string | null) {
+  if (!embedding) return;
+  await prisma.$executeRawUnsafe(
+    `UPDATE memories SET embedding = $1::vector WHERE id = $2::uuid`,
+    embedding,
+    memoryId
+  );
+}
+
 export async function createMemory(userId: string, input: CreateMemoryInput) {
   await limiters.memory.limit(userId);
   const parsed = CreateMemorySchema.parse(input);
@@ -69,8 +71,6 @@ export async function createMemory(userId: string, input: CreateMemoryInput) {
     storedContent = ENC_PREFIX + (await encryptText(sanitized, parsed.passphrase));
     isEncrypted = true;
   }
-
-  const embedding = isEncrypted ? null : await embedIfPossible(sanitized);
 
   const memory = await prisma.memory.create({
     data: {
@@ -86,10 +86,13 @@ export async function createMemory(userId: string, input: CreateMemoryInput) {
       relatedPeople: parsed.relatedPeople,
       metadata: parsed.metadata as object,
       isEncrypted,
-      embedding: embedding ? embedding : undefined,
       createdBy: "user",
     },
   });
+
+  if (!isEncrypted) {
+    await writeEmbedding(memory.id, await embedIfPossible(sanitized));
+  }
 
   await prisma.memoryVersion.create({
     data: {
@@ -141,9 +144,6 @@ export async function updateMemory(
   }
 
   const nextVersion = existing.version + 1;
-  const embedding = isEncrypted ? null : await embedIfPossible(
-    isEncrypted ? existing.content : newContent
-  );
 
   const updated = await prisma.memory.update({
     where: { id: memoryId },
@@ -160,10 +160,13 @@ export async function updateMemory(
       metadata: (parsed.metadata as object) ?? existing.metadata,
       isEncrypted,
       version: nextVersion,
-      embedding: embedding ? embedding : undefined,
       updatedAt: new Date(),
     },
   });
+
+  if (!isEncrypted && parsed.content) {
+    await writeEmbedding(memoryId, await embedIfPossible(newContent));
+  }
 
   await prisma.memoryVersion.create({
     data: {
