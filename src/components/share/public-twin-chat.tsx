@@ -9,6 +9,7 @@ type Meta = {
   scopes: string[];
   expiresAt: string | null;
   granteeLabel: string | null;
+  canChat: boolean;
 };
 
 type Msg = { id: string; role: "user" | "assistant"; content: string };
@@ -37,7 +38,8 @@ export function PublicTwinChat({ token }: { token: string }) {
 
   async function send() {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || meta?.canChat === false) return;
+    setError(null);
     setInput("");
     setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", content: text }]);
     setStreaming(true);
@@ -60,6 +62,8 @@ export function PublicTwinChat({ token }: { token: string }) {
       setStreaming(false);
     }
   }
+
+  const canChat = meta?.canChat !== false;
 
   if (error && !meta) {
     return (
@@ -86,6 +90,16 @@ export function PublicTwinChat({ token }: { token: string }) {
             </span>
           ))}
         </div>
+        {meta.expiresAt && (
+          <p className="mt-3 text-xs text-muted">
+            Expires {new Date(meta.expiresAt).toLocaleString()}
+          </p>
+        )}
+        {!canChat && (
+          <p className="mt-3 text-sm text-muted" role="status">
+            This link does not currently allow chat.
+          </p>
+        )}
       </div>
 
       <div className="flex min-h-[420px] flex-col overflow-hidden rounded-xl border bg-card">
@@ -109,16 +123,26 @@ export function PublicTwinChat({ token }: { token: string }) {
           <div ref={bottomRef} />
         </div>
         <div className="border-t p-3">
+          {error && (
+            <p className="mb-2 text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          )}
           <div className="flex gap-2">
+            <label className="sr-only" htmlFor="twin-message">
+              Message
+            </label>
             <input
+              id="twin-message"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()}
               placeholder="Ask the twin…"
-              disabled={streaming}
+              disabled={streaming || !canChat}
+              aria-busy={streaming}
               className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
             />
-            <Button onClick={send} disabled={streaming || !input.trim()}>
+            <Button onClick={send} disabled={streaming || !canChat || !input.trim()}>
               Send
             </Button>
           </div>

@@ -3,7 +3,7 @@ import {
   ConsentGrant,
   ConsentScope,
   GranteeType,
-  PermissionAudit,
+  Prisma,
 } from "@prisma/client";
 import { z } from "zod";
 import crypto from "crypto";
@@ -39,7 +39,7 @@ export async function logPermissionEvent(params: {
       actor: params.actor,
       actorType: params.actorType,
       resource: params.resource ?? null,
-      metadata: params.metadata ?? {},
+      metadata: (params.metadata ?? {}) as Prisma.InputJsonValue,
       ipAddress: params.ipAddress ?? null,
       userAgent: params.userAgent ?? null,
     },
@@ -105,11 +105,21 @@ export async function listGrants(userId: string) {
   });
 }
 
+export function accessFromScopes(scopes: ConsentScope[]) {
+  return {
+    chat: scopes.includes(ConsentScope.CHAT),
+    readMemories: scopes.includes(ConsentScope.READ_MEMORIES),
+    readProfile: scopes.includes(ConsentScope.READ_PROFILE),
+  };
+}
+
 export async function assertGrantAccess(params: {
   userId: string;
   grantId?: string | null;
   requiredScope: ConsentScope;
   actor: string;
+  ipAddress?: string | null;
+  userAgent?: string | null;
 }): Promise<ConsentGrant | null> {
   if (!params.grantId) return null; // owner path
 
@@ -130,6 +140,8 @@ export async function assertGrantAccess(params: {
       actorType: "GRANTEE",
       grantId: params.grantId,
       metadata: { reason: "not_found_or_expired" },
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
     });
     throw new Error("Access denied");
   }
@@ -142,6 +154,8 @@ export async function assertGrantAccess(params: {
       actorType: "GRANTEE",
       grantId: grant.id,
       metadata: { reason: "missing_scope", required: params.requiredScope },
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
     });
     throw new Error("Insufficient scope");
   }
@@ -154,6 +168,8 @@ export async function assertGrantAccess(params: {
       actorType: "GRANTEE",
       grantId: grant.id,
       metadata: { reason: "max_uses_exceeded" },
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
     });
     throw new Error("Usage limit exceeded");
   }
@@ -170,6 +186,8 @@ export async function assertGrantAccess(params: {
     actorType: "GRANTEE",
     grantId: grant.id,
     metadata: { scope: params.requiredScope },
+    ipAddress: params.ipAddress,
+    userAgent: params.userAgent,
   });
 
   return grant;
@@ -180,11 +198,26 @@ export function hashToken(token: string): string {
 }
 
 export async function createPublicShareToken(userId: string, grantId: string) {
+  const existing = await prisma.consentGrant.findFirst({
+    where: { id: grantId, userId, revokedAt: null },
+  });
+  if (!existing) throw new Error("Grant not found");
+  if (existing.expiresAt && existing.expiresAt.getTime() <= Date.now()) {
+    throw new Error("Grant expired");
+  }
+
   const raw = crypto.randomBytes(32).toString("hex");
   const tokenHash = hashToken(raw);
   await prisma.consentGrant.update({
-    where: { id: grantId, userId },
+    where: { id: grantId },
     data: { tokenHash },
+  });
+  await logPermissionEvent({
+    userId,
+    action: "ISSUE_SHARE_TOKEN",
+    actor: userId,
+    actorType: "USER",
+    grantId,
   });
   return raw;
 }

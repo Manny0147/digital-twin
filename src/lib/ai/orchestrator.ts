@@ -1,6 +1,7 @@
 import { prisma } from "../db";
 import { generateEmbedding, toPgVector } from "./embeddings";
 import { buildPersonalitySystemPrompt, getPersonality } from "../personality";
+import { accessFromScopes } from "../permissions";
 import { openai } from "@ai-sdk/openai";
 import { streamText } from "ai";
 
@@ -47,10 +48,34 @@ export async function runTwinChat(params: {
   userMessage: string;
   grantId?: string | null;
 }) {
-  const personality = await getPersonality(params.userId);
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY not configured");
+  }
+
+  let includeMemories = true;
+  let includeProfile = true;
+  if (params.grantId) {
+    const grant = await prisma.consentGrant.findFirst({
+      where: {
+        id: params.grantId,
+        userId: params.userId,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+    });
+    if (!grant) throw new Error("Access denied");
+    const access = accessFromScopes(grant.scopes);
+    if (!access.chat) throw new Error("Insufficient scope");
+    includeMemories = access.readMemories;
+    includeProfile = access.readProfile;
+  }
+
+  const personality = includeProfile ? await getPersonality(params.userId) : null;
   const system = buildPersonalitySystemPrompt(personality);
 
-  const hits = await searchMemoriesByEmbedding(params.userId, params.userMessage);
+  const hits = includeMemories
+    ? await searchMemoriesByEmbedding(params.userId, params.userMessage)
+    : [];
   const citations: Citation[] = hits.map((h) => ({
     memoryId: h.id,
     relevance: h.similarity,
@@ -60,7 +85,9 @@ export async function runTwinChat(params: {
 
   const context = hits.length
     ? `Relevant memories:\n${hits.map((h, i) => `[${i + 1}] ${h.content}`).join("\n")}`
-    : "No relevant memories found.";
+    : includeMemories
+      ? "No relevant memories found."
+      : "Memory access is not included in this consent grant. Do not guess personal facts.";
 
   const result = streamText({
     model: openai("gpt-4o-mini"),

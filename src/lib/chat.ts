@@ -29,6 +29,8 @@ export async function listThreads(userId: string) {
   });
 }
 
+export type ThreadWithPreview = Awaited<ReturnType<typeof listThreads>>[number];
+
 export async function getThread(userId: string, threadId: string) {
   return prisma.chatThread.findFirst({
     where: { id: threadId, userId },

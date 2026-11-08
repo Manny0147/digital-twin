@@ -22,6 +22,7 @@ export async function POST(req: Request) {
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Import failed";
-    return NextResponse.json({ error: message }, { status: 400 });
+    const status = message === "Rate limited" ? 429 : 400;
+    return NextResponse.json({ error: message }, { status });
   }
 }

@@ -1,12 +1,20 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { MemoryType } from "@prisma/client";
 import {
   createMemory, updateMemory, deleteMemory, listMemories, getMemory,
   getMemoryHistory, acceptSuggestedMemory, decryptMemoryContent,
   CreateMemorySchema, UpdateMemorySchema, DecryptMemorySchema,
 } from "@/lib/memories";
 import { requireInternalUserId } from "@/lib/auth";
+
+function parseMemoryType(value: string): MemoryType {
+  if ((Object.values(MemoryType) as string[]).includes(value)) {
+    return value as MemoryType;
+  }
+  throw new Error("Invalid memory type");
+}
 
 export async function createMemoryAction(raw: unknown) {
   const userId = await requireInternalUserId();
@@ -33,7 +41,12 @@ export async function deleteMemoryAction(memoryId: string) {
 
 export async function listMemoriesAction(opts?: { search?: string; type?: string; limit?: number; offset?: number }) {
   const userId = await requireInternalUserId();
-  return listMemories(userId, { search: opts?.search, type: opts?.type as any, limit: opts?.limit, offset: opts?.offset });
+  return listMemories(userId, {
+    search: opts?.search,
+    type: opts?.type ? parseMemoryType(opts.type) : undefined,
+    limit: opts?.limit,
+    offset: opts?.offset,
+  });
 }
 
 export async function getMemoryAction(memoryId: string) {

@@ -2,7 +2,7 @@ import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import { ensureUser } from "@/lib/auth";
 import { runTwinChat } from "@/lib/ai/orchestrator";
-import { addMessage, getThread } from "@/lib/chat";
+import { addMessage } from "@/lib/chat";
 import { sanitizeChatInput } from "@/lib/sanitize";
 import { limiters } from "@/lib/rate-limit";
 
@@ -37,13 +37,24 @@ export async function POST(req: Request) {
     content: message,
   });
 
-  const { result, citations } = await runTwinChat({
-    userId,
-    threadId: tid,
-    userMessage: message,
-  });
-
-  const text = await result.text;
+  let citations: Awaited<ReturnType<typeof runTwinChat>>["citations"];
+  let text: string;
+  try {
+    const chat = await runTwinChat({
+      userId,
+      threadId: tid,
+      userMessage: message,
+    });
+    citations = chat.citations;
+    text = await chat.result.text;
+  } catch (err) {
+    const messageText = err instanceof Error ? err.message : "Request failed";
+    if (messageText === "OPENAI_API_KEY not configured") {
+      return NextResponse.json({ error: "The twin model is not configured." }, { status: 503 });
+    }
+    console.error(err);
+    return NextResponse.json({ error: "Request failed" }, { status: 500 });
+  }
 
   const assistant = await addMessage({
     threadId: tid,

@@ -5,6 +5,13 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+function copyBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  const copy = new Uint8Array(buffer);
+  copy.set(bytes);
+  return copy;
+}
+
 async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
   const baseKey = await crypto.subtle.importKey(
     "raw",
@@ -16,7 +23,7 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKe
   return crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt,
+      salt: copyBytes(salt),
       iterations: 100_000,
       hash: "SHA-256",
     },

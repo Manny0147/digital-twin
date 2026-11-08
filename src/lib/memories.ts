@@ -10,7 +10,7 @@ import { z } from "zod";
 import { logPermissionEvent } from "./permissions";
 import { generateEmbedding, toPgVector } from "./ai/embeddings";
 import { sanitizeMemoryContent } from "./sanitize";
-import { limiters } from "./rate-limit";
+import { assertWithinLimit, limiters } from "./rate-limit";
 import {
   encryptText,
   decryptText,
@@ -58,8 +58,41 @@ async function embedIfPossible(content: string): Promise<string | null> {
   }
 }
 
+function assertVectorLiteral(value: string) {
+  if (!/^\[[0-9eE+.,\-]+\]$/.test(value)) {
+    throw new Error("Invalid embedding");
+  }
+}
+
+/** pgvector is an Unsupported Prisma field, so writes go through a parameterized query. */
+async function persistEmbedding(
+  memoryId: string,
+  userId: string,
+  embedding: string | null,
+  clear: boolean
+) {
+  if (embedding) {
+    assertVectorLiteral(embedding);
+    await prisma.$executeRaw`
+      UPDATE memories
+      SET embedding = ${embedding}::vector
+      WHERE id = ${memoryId}::uuid
+        AND "userId" = ${userId}::uuid
+    `;
+    return;
+  }
+  if (clear) {
+    await prisma.$executeRaw`
+      UPDATE memories
+      SET embedding = NULL
+      WHERE id = ${memoryId}::uuid
+        AND "userId" = ${userId}::uuid
+    `;
+  }
+}
+
 export async function createMemory(userId: string, input: CreateMemoryInput) {
-  await limiters.memory.limit(userId);
+  await assertWithinLimit(limiters.memory, userId);
   const parsed = CreateMemorySchema.parse(input);
   const sanitized = sanitizeMemoryContent(parsed.content);
 
@@ -88,10 +121,10 @@ export async function createMemory(userId: string, input: CreateMemoryInput) {
       relatedPeople: parsed.relatedPeople,
       metadata: parsed.metadata as object,
       isEncrypted,
-      embedding: embedding ? embedding : undefined,
       createdBy: "user",
     },
   });
+  await persistEmbedding(memory.id, userId, embedding, isEncrypted);
 
   await prisma.memoryVersion.create({
     data: {
@@ -121,7 +154,7 @@ export async function updateMemory(
   memoryId: string,
   input: UpdateMemoryInput
 ) {
-  await limiters.memory.limit(userId);
+  await assertWithinLimit(limiters.memory, userId);
   const existing = await prisma.memory.findFirst({
     where: { id: memoryId, userId, status: { not: MemoryStatus.DELETED } },
   });
@@ -162,10 +195,10 @@ export async function updateMemory(
       metadata: (parsed.metadata as object) ?? existing.metadata,
       isEncrypted,
       version: nextVersion,
-      embedding: embedding ? embedding : undefined,
       updatedAt: new Date(),
     },
   });
+  await persistEmbedding(memoryId, userId, embedding, isEncrypted);
 
   await prisma.memoryVersion.create({
     data: {
@@ -195,6 +228,7 @@ export async function decryptMemoryContent(
   memoryId: string,
   passphrase: string
 ): Promise<string> {
+  await assertWithinLimit(limiters.decrypt, userId);
   const memory = await prisma.memory.findFirst({
     where: { id: memoryId, userId },
   });
@@ -206,11 +240,86 @@ export async function decryptMemoryContent(
   return decryptText(payload, passphrase);
 }
 
-export async function listMemories(userId: string) {
+export async function listMemories(
+  userId: string,
+  opts?: {
+    search?: string;
+    type?: MemoryType;
+    limit?: number;
+    offset?: number;
+  }
+) {
+  const search = opts?.search?.trim();
   return prisma.memory.findMany({
-    where: { userId, status: { not: MemoryStatus.DELETED } },
+    where: {
+      userId,
+      status: { not: MemoryStatus.DELETED },
+      ...(opts?.type ? { type: opts.type } : {}),
+      ...(search
+        ? { content: { contains: search, mode: "insensitive" as const } }
+        : {}),
+    },
     orderBy: [{ importance: "desc" }, { updatedAt: "desc" }],
+    ...(opts?.limit !== undefined ? { take: Math.min(Math.max(opts.limit, 1), 100) } : {}),
+    ...(opts?.offset !== undefined ? { skip: Math.max(opts.offset, 0) } : {}),
   });
+}
+
+export async function getMemory(userId: string, memoryId: string) {
+  return prisma.memory.findFirst({
+    where: { id: memoryId, userId, status: { not: MemoryStatus.DELETED } },
+  });
+}
+
+export async function getMemoryHistory(userId: string, memoryId: string) {
+  const memory = await getMemory(userId, memoryId);
+  if (!memory) throw new Error("Memory not found");
+  return prisma.memoryVersion.findMany({
+    where: { memoryId, userId },
+    orderBy: { version: "desc" },
+  });
+}
+
+export async function deleteMemory(userId: string, memoryId: string) {
+  await assertWithinLimit(limiters.memory, userId);
+  const existing = await getMemory(userId, memoryId);
+  if (!existing) throw new Error("Memory not found");
+
+  const memory = await prisma.memory.update({
+    where: { id: memoryId, userId },
+    data: { status: MemoryStatus.DELETED, deletedAt: new Date() },
+  });
+  await persistEmbedding(memoryId, userId, null, true);
+  await logPermissionEvent({
+    userId,
+    action: "DELETE_MEMORY",
+    actor: userId,
+    actorType: "USER",
+    resource: memoryId,
+  });
+  return memory;
+}
+
+export async function acceptSuggestedMemory(userId: string, memoryId: string) {
+  await assertWithinLimit(limiters.memory, userId);
+  const existing = await getMemory(userId, memoryId);
+  if (!existing) throw new Error("Memory not found");
+  if (existing.source !== MemorySource.AI_SUGGESTED) {
+    throw new Error("Memory is not a suggestion");
+  }
+
+  const memory = await prisma.memory.update({
+    where: { id: memoryId, userId },
+    data: { source: MemorySource.USER, status: MemoryStatus.ACTIVE },
+  });
+  await logPermissionEvent({
+    userId,
+    action: "ACCEPT_SUGGESTED_MEMORY",
+    actor: userId,
+    actorType: "USER",
+    resource: memoryId,
+  });
+  return memory;
 }
 
 export async function archiveMemory(userId: string, memoryId: string) {

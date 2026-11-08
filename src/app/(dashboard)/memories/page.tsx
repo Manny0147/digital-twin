@@ -5,7 +5,7 @@ import { MemoryList } from "@/components/memory/memory-list";
 
 export default async function MemoriesPage() {
   const { id: userId } = await ensureUser();
-  const { memories } = await listMemories(userId);
+  const memories = await listMemories(userId);
 
   return (
     <div className="space-y-6">

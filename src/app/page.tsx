@@ -4,8 +4,10 @@ import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
 export default async function Home() {
-  const { userId } = await auth();
-  if (userId) redirect("/dashboard");
+  if (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY) {
+    const { userId } = await auth();
+    if (userId) redirect("/dashboard");
+  }
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-6 text-center">

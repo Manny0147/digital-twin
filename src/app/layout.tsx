@@ -6,6 +6,9 @@ import { Toaster } from "sonner";
 import { InstallPrompt } from "@/components/pwa/install-prompt";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
+const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Digital Twin — Own Your Digital Identity",
@@ -32,15 +35,16 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  return (
-    <ClerkProvider>
-      <html lang="en" className={inter.variable}>
-        <body className="min-h-screen bg-background font-sans antialiased pb-safe">
-          {children}
-          <InstallPrompt />
-          <Toaster position="top-center" richColors closeButton />
-        </body>
-      </html>
-    </ClerkProvider>
+  const content = (
+    <html lang="en" className={inter.variable}>
+      <body className="min-h-screen bg-background font-sans antialiased pb-safe">
+        {children}
+        <InstallPrompt />
+        <Toaster position="top-center" richColors closeButton />
+      </body>
+    </html>
   );
+
+  if (!publishableKey) return content;
+  return <ClerkProvider publishableKey={publishableKey}>{content}</ClerkProvider>;
 }

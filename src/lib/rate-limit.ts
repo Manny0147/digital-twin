@@ -9,6 +9,12 @@ const redis =
       })
     : null;
 
+if (!redis && process.env.NODE_ENV === "production") {
+  console.warn(
+    "UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are not set. Rate limits are still enforced, but only inside each server instance."
+  );
+}
+
 function makeLimiter(prefix: string, requests: number, window: string) {
   if (!redis) {
     // Fallback in-memory for local/dev when Upstash is not configured
@@ -39,5 +45,19 @@ function makeLimiter(prefix: string, requests: number, window: string) {
 export const limiters = {
   chat: makeLimiter("rl:chat", 20, "60 s"),
   memory: makeLimiter("rl:memory", 30, "60 s"),
+  decrypt: makeLimiter("rl:decrypt", 5, "60 s"),
   grant: makeLimiter("rl:grant", 10, "60 s"),
+  publicToken: makeLimiter("rl:public:token", 20, "60 s"),
+  publicIp: makeLimiter("rl:public:ip", 60, "60 s"),
 };
+
+export async function assertWithinLimit(
+  limiter: { limit: (key: string) => Promise<{ success: boolean }> },
+  key: string
+) {
+  const result = await limiter.limit(key);
+  if (!result.success) {
+    throw new Error("Rate limited");
+  }
+  return result;
+}
