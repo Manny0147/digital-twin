@@ -3,7 +3,7 @@ import {
   ConsentGrant,
   ConsentScope,
   GranteeType,
-  PermissionAudit,
+  Prisma,
 } from "@prisma/client";
 import { z } from "zod";
 import crypto from "crypto";
@@ -39,7 +39,7 @@ export async function logPermissionEvent(params: {
       actor: params.actor,
       actorType: params.actorType,
       resource: params.resource ?? null,
-      metadata: params.metadata ?? {},
+      metadata: (params.metadata ?? {}) as Prisma.InputJsonValue,
       ipAddress: params.ipAddress ?? null,
       userAgent: params.userAgent ?? null,
     },
@@ -111,7 +111,7 @@ export async function assertGrantAccess(params: {
   requiredScope: ConsentScope;
   actor: string;
 }): Promise<ConsentGrant | null> {
-  if (!params.grantId) return null; // owner path
+  if (!params.grantId) return null;
 
   const grant = await prisma.consentGrant.findFirst({
     where: {
