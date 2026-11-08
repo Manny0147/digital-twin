@@ -5,6 +5,10 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+function toBufferSource(data: Uint8Array): BufferSource {
+  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+}
+
 async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
   const baseKey = await crypto.subtle.importKey(
     "raw",
@@ -16,7 +20,7 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKe
   return crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt,
+      salt: toBufferSource(salt),
       iterations: 100_000,
       hash: "SHA-256",
     },
@@ -32,7 +36,7 @@ export async function encryptContent(plaintext: string, passphrase: string): Pro
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await deriveKey(passphrase, salt);
   const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
+    { name: "AES-GCM", iv: toBufferSource(iv) },
     key,
     encoder.encode(plaintext)
   );
@@ -50,7 +54,11 @@ export async function decryptContent(ciphertext: string, passphrase: string): Pr
   const iv = raw.slice(16, 28);
   const data = raw.slice(28);
   const key = await deriveKey(passphrase, salt);
-  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: toBufferSource(iv) },
+    key,
+    toBufferSource(data)
+  );
   return decoder.decode(plain);
 }
 
